@@ -1,8 +1,8 @@
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Command;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub(super) fn theme_dirs() -> Vec<PathBuf> {
     let mut paths = super::common_theme_dirs();
@@ -27,6 +27,10 @@ pub(super) fn theme_dirs() -> Vec<PathBuf> {
     paths
 }
 
+unsafe extern "C" {
+    fn setsid() -> i32;
+}
+
 pub(super) fn launch(
     light: &str,
     dark: &str,
@@ -36,6 +40,7 @@ pub(super) fn launch(
 ) -> io::Result<()> {
     let theme = format!("--theme=light:{light},dark:{dark}");
     let mut command = Command::new("ghostty");
+    command.arg("--gtk-single-instance=false");
     command.arg(theme);
     command.arg("--window-save-state=never");
     if let Some(font) = font {
@@ -44,5 +49,25 @@ pub(super) fn launch(
     }
     command.arg(format!("--working-directory={}", cwd.to_string_lossy()));
     command.args(extra_args);
-    command.spawn().map(|_| ())
+
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    unsafe {
+        command.pre_exec(|| {
+            if setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+
+    Ok(())
 }
