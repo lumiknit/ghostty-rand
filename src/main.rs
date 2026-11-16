@@ -22,7 +22,8 @@ const LAST_VALID_OFFSET: u64 = 38;
 
 const HELP: &str = "ghostty-rand - open Ghostty with random themes\n\n\
 Usage:\n\
-  ghostty-rand [--help | --version] [-- GHOSTTY_ARGS...]\n\
+  ghostty-rand [--help | --version] [-w DIR | --working-directory DIR] [-- GHOSTTY_ARGS...]\n\
+  ghostty-rand [-w DIR | --working-directory DIR] -e COMMAND [ARGS...]\n\
   ghostty-rand --generate [--dark-threshold VALUE] [--light-threshold VALUE]\n\
                  [--font-family FAMILY ...]\n\n\
 Options:\n\
@@ -30,6 +31,10 @@ Options:\n\
   --dark-threshold VALUE Classify themes below VALUE as dark (default: 65)\n\
   --light-threshold VALUE Classify themes above VALUE as light (default: 120)\n\
   --font-family FAMILY   Add a font family to the random selection (repeatable)\n\
+  -w DIR, --working-directory DIR\n\
+                         Set Ghostty's working directory (default: .)\n\
+  -e COMMAND ...        Run COMMAND in Ghostty; pass remaining arguments\n\
+                         to COMMAND unchanged\n\
   -- GHOSTTY_ARGS        Pass all following arguments to Ghostty unchanged\n\
   -V, --version          Show the package version\n\
   -h, --help              Show this help\n\n\
@@ -43,6 +48,7 @@ struct Options {
     font_families: Vec<String>,
     dark_threshold: Option<f64>,
     light_threshold: Option<f64>,
+    working_directory: Option<OsString>,
     ghostty_args: Vec<OsString>,
     show_help: bool,
     show_version: bool,
@@ -71,7 +77,8 @@ fn run() -> Result<(), String> {
     if dark_threshold >= light_threshold {
         return Err("--dark-threshold must be lower than --light-threshold".to_owned());
     }
-    if options.generate && !options.ghostty_args.is_empty() {
+    if options.generate && (!options.ghostty_args.is_empty() || options.working_directory.is_some())
+    {
         return Err("Ghostty arguments cannot be used with --generate".to_owned());
     }
 
@@ -132,22 +139,30 @@ fn run() -> Result<(), String> {
 
     let cwd =
         env::current_dir().map_err(|error| format!("could not read current directory: {error}"))?;
-    platform::launch(&light, &dark, font.as_ref(), &cwd, &options.ghostty_args)
-        .map_err(|error| format!("could not start Ghostty: {error}"))
+    let (working_directory, ghostty_args) =
+        resolve_launch_args(&cwd, options.working_directory, options.ghostty_args)?;
+    platform::launch(
+        &light,
+        &dark,
+        font.as_ref(),
+        &working_directory,
+        &ghostty_args,
+    )
+    .map_err(|error| format!("could not start Ghostty: {error}"))
 }
 
 fn parse_options(args: impl Iterator<Item = OsString>) -> Result<Options, String> {
     let mut options = Options::default();
     let mut args = args.peekable();
-    let mut forwarding = false;
     while let Some(raw_arg) = args.next() {
-        if forwarding {
-            options.ghostty_args.push(raw_arg);
-            continue;
-        }
         if raw_arg.as_os_str() == OsStr::new("--") {
-            forwarding = true;
-            continue;
+            options.ghostty_args.extend(args);
+            break;
+        }
+        if raw_arg.as_os_str() == OsStr::new("-e") {
+            options.ghostty_args.push(raw_arg);
+            options.ghostty_args.extend(args);
+            break;
         }
         let arg = raw_arg
             .to_str()
@@ -156,6 +171,12 @@ fn parse_options(args: impl Iterator<Item = OsString>) -> Result<Options, String
             "-h" | "--help" => options.show_help = true,
             "-V" | "--version" => options.show_version = true,
             "--generate" => options.generate = true,
+            "-w" | "--working-directory" => {
+                options.working_directory = Some(
+                    args.next()
+                        .ok_or_else(|| format!("{arg} requires a value"))?,
+                );
+            }
             "--dark-threshold" => {
                 options.dark_threshold = Some(parse_threshold(
                     "--dark-threshold",
@@ -181,6 +202,13 @@ fn parse_options(args: impl Iterator<Item = OsString>) -> Result<Options, String
                     return Err("--font-family requires a value".to_owned());
                 }
                 options.font_families.push(family);
+            }
+            _ if arg.starts_with("--working-directory=") => {
+                let directory = &arg["--working-directory=".len()..];
+                if directory.is_empty() {
+                    return Err("--working-directory requires a value".to_owned());
+                }
+                options.working_directory = Some(OsString::from(directory));
             }
             _ if arg.starts_with("--dark-threshold=") => {
                 options.dark_threshold = Some(parse_threshold(
@@ -211,6 +239,58 @@ fn parse_options(args: impl Iterator<Item = OsString>) -> Result<Options, String
         }
     }
     Ok(options)
+}
+
+fn resolve_launch_args(
+    current_directory: &Path,
+    explicit_working_directory: Option<OsString>,
+    args: Vec<OsString>,
+) -> Result<(PathBuf, Vec<OsString>), String> {
+    let mut working_directory = explicit_working_directory;
+    let mut forwarded = Vec::with_capacity(args.len());
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        if arg.as_os_str() == OsStr::new("-e") {
+            forwarded.push(arg);
+            forwarded.extend(args);
+            break;
+        }
+
+        if arg.as_os_str() == OsStr::new("-w")
+            || arg.as_os_str() == OsStr::new("--working-directory")
+        {
+            working_directory = Some(
+                args.next()
+                    .ok_or_else(|| format!("{} requires a value", arg.to_string_lossy()))?,
+            );
+            continue;
+        }
+
+        if let Some(value) = arg
+            .to_str()
+            .and_then(|arg| arg.strip_prefix("--working-directory="))
+        {
+            if value.is_empty() {
+                return Err("--working-directory requires a value".to_owned());
+            }
+            working_directory = Some(OsString::from(value));
+            continue;
+        }
+
+        forwarded.push(arg);
+    }
+
+    let working_directory = working_directory
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let working_directory = if working_directory.is_absolute() {
+        working_directory
+    } else {
+        current_directory.join(working_directory)
+    };
+
+    Ok((working_directory, forwarded))
 }
 
 fn next_utf8(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<String, String> {

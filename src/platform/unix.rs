@@ -47,7 +47,9 @@ pub(super) fn launch(
         command.arg("--font-family=");
         command.arg(format!("--font-family={font}"));
     }
-    command.arg(format!("--working-directory={}", cwd.to_string_lossy()));
+    let mut working_directory_arg = OsString::from("--working-directory=");
+    working_directory_arg.push(cwd.as_os_str());
+    command.arg(working_directory_arg);
     command.args(extra_args);
 
     command
