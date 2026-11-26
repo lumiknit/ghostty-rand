@@ -31,6 +31,9 @@ After initialization, open a new window with:
 ```sh
 ghostty-rand
 
+# Open Ghostty in an existing directory.
+ghostty-rand ./project
+
 # Pass additional Ghostty arguments after '--':
 ghostty-rand -- --font-size=14
 ```

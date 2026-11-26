@@ -22,6 +22,7 @@ const LAST_VALID_OFFSET: u64 = 38;
 
 const HELP: &str = "ghostty-rand - open Ghostty with random themes\n\n\
 Usage:\n\
+  ghostty-rand DIR\n\
   ghostty-rand [--help | --version] [-w DIR | --working-directory DIR] [-- GHOSTTY_ARGS...]\n\
   ghostty-rand [-w DIR | --working-directory DIR] -e COMMAND [ARGS...]\n\
   ghostty-rand --generate [--dark-threshold VALUE] [--light-threshold VALUE]\n\
@@ -154,6 +155,17 @@ fn run() -> Result<(), String> {
 fn parse_options(args: impl Iterator<Item = OsString>) -> Result<Options, String> {
     let mut options = Options::default();
     let mut args = args.peekable();
+    let first = args.next();
+    if let Some(directory) = first.as_ref() {
+        if args.peek().is_none()
+            && !directory.as_encoded_bytes().starts_with(b"-")
+            && Path::new(directory).is_dir()
+        {
+            options.working_directory = first;
+            return Ok(options);
+        }
+    }
+    let mut args = first.into_iter().chain(args);
     while let Some(raw_arg) = args.next() {
         if raw_arg.as_os_str() == OsStr::new("--") {
             options.ghostty_args.extend(args);
